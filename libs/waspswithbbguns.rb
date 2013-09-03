@@ -1,94 +1,77 @@
-#!/usr/bin/env ruby
-#
-# Todo
-# - Parameterize command
-# - Check for aws creds
-#
 require 'rubygems'
 require 'fog'
 require 'json'
-require 'optparse'
 
+class Wasp < Struct.new(:number_of_wasps,
+                        :nest_file,
+                        :provider_region,
+                        :image_id,
+                        :tag,
+                        :species,
+                        :private_key_path,
+                        :provider,
+                        :public_key_path,
+                        :username,
+                        :security_group)
 
-# Fog.mock!
-
-$number_of_wasps = 2
-$wasps_nest_file = '.waspsnest.json'
-$aws_region = 'eu-west-1'
-$image_id = 'ami-75dbc301'
-$wasp_tag = { Name: 'grinder.worker' }
-$wasp_species =  't1.micro'
-$wasp_private_key_path = '~/.ssh/id_rsa'
-$wasp_public_key_path = '~/.ssh/id_rsa.pub'
-$wasp_username = 'ec2-user'
-$wasp_security_group = ['grinder-pool']
-
-options = {}
-
-$connection = Fog::Compute.new(
-    {
-        :provider              => 'AWS',
-        :region                => $aws_region
-    }
-)
-
-def rebuild_wasp_nest
-  File.open($wasps_nest_file,'w') do |file|
-    file.puts [].to_json
+  def connection
+    @connection = Fog::Compute.new(
+        {
+            :provider => self.provider,
+            :region => self.provider_region
+        }
+    )
   end
-end
 
-def breed_wasp
-
-  server = $connection.servers.bootstrap(
-      :tags             => $wasp_tag,
-      :image_id         => $image_id,
-      :flavor_id        => $wasp_species,
-      :private_key_path => $wasp_private_key_path,
-      :public_key_path  => $wasp_public_key_path,
-      :username         => $wasp_username,
-      :security_groups  => $wasp_security_group
-  )
-  server.wait_for { ready? }
-  server.reload
-  return server.id
-end
-
-
-def smoke_wasps
-  return if !File.exist?($wasps_nest_file)
-  data = JSON.parse(File.read($wasps_nest_file))
-  data.each do |wasp|
-    puts wasp + " smoked."
-    $connection.terminate_instances(wasp)
-  end
-  rebuild_wasp_nest
-end
-
-def create_colony(number_of_wasps)
-  threads = []
-  rebuild_wasp_nest if !File.exist?($wasps_nest_file)
-  nest = JSON.parse(File.read($wasps_nest_file))
-
-  number_of_wasps.times{
-    threads << Thread.new() do
-      nest << breed_wasp
+  def rebuild_nest(wasp_info)
+    File.open(self.nest_file, 'w') do |file|
+      file.puts wasp_info.to_json
     end
-  }
-  threads.each { |thr| thr.join }
-  puts nest.to_json
+  end
 
-  File.open($wasps_nest_file,'w') do |file|
-    file.puts nest.to_json
+  def clean_nest
+    rebuild_nest([])
+  end
+
+  def query_nest
+    JSON.parse(File.read(self.nest_file))
+  end
+
+  def breed
+    server = connection.servers.bootstrap(
+        :tags => self.tag,
+        :image_id => self.image_id,
+        :flavor_id => self.species,
+        :private_key_path => self.private_key_path,
+        :public_key_path => self.public_key_path,
+        :username => self.username,
+        :security_groups => self.security_group
+    )
+    server.wait_for { ready? }
+    server.reload
+    server.id
+  end
+
+  def smoke
+    return if !File.exist?(self.nest_file)
+    query_nest.each do |wasp|
+      puts wasp + ' smoked.'
+      connection.terminate_instances(wasp)
+    end
+  end
+
+  def create_colony
+    threads = []
+    nest = query_nest
+
+    self.number_of_wasps.times {
+      threads << Thread.new() do
+        nest << self.breed
+      end
+    }
+    threads.each { |thr| thr.join }
+    puts nest.to_json #Debug what am I about to write to nest file.
+
+    rebuild_nest(nest)
   end
 end
-
-#create_colony($number_of_wasps)
-#sleep(10)
-#puts "Smoking wasps"
-#smoke_wasps
-
-opts = OptionParser.new
-opts.on("--up") { create_colony($number_of_wasps) }
-opts.on("--down") { smoke_wasps }
-opts.parse!
